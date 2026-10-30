@@ -1,6 +1,6 @@
 # FRAME
 
-FRAME is a local-first photo culling application. Phase 1 provides recursive photo discovery, RAW/JPEG pairing, SQLite persistence, cached thumbnails, background scan progress, cancellation, and a responsive gallery. Originals are opened read-only and never changed.
+FRAME is a local-first photo culling application. Phases 1–2 provide recursive discovery, RAW/JPEG pairing, SQLite persistence, thumbnails, background progress and conventional technical-quality analysis. Originals are opened read-only and never changed.
 
 ## Quick start (Windows PowerShell)
 
@@ -36,3 +36,15 @@ cd frontend; npm test -- --run; npm run build
 ```
 
 See [docs/architecture.md](docs/architecture.md) for design and known limitations.
+
+## Technical analysis
+
+Rendered images are measured during import for Laplacian and Tenengrad sharpness, regional detail, luminance distribution, clipping, dynamic range, entropy, and a texture-discounted noise estimate. Results include conservative KEEP/REVIEW/REJECT recommendations and explanations. The displayed index is heuristic, not a probability.
+
+Quality rules are available at `GET /api/quality/config` and can be changed with `PUT /api/quality/config`. Rule changes reuse stored measurements. To evaluate against human labels, prepare a CSV with `path,label` and run:
+
+```powershell
+python benchmarks/evaluate_quality.py labels.csv --output report.json
+```
+
+No representative real-world labelled set is bundled, so calibration remains incomplete.

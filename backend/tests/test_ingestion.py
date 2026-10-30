@@ -37,6 +37,25 @@ def test_scan_persists_and_is_idempotent(app, tmp_path):
         assert len(rows) == 1
         assert (rows[0].width, rows[0].height) == (80, 60)
         assert Path(rows[0].thumbnail_path).exists()
+        assert rows[0].analysis_version == "quality-1"
+        assert rows[0].technical_score is not None
+        first_analysis = rows[0].analysis_json
+    scan(source, app.state.factory, app.state.settings.thumbnail_dir, Event(), lambda *_: None)
+    with app.state.factory() as session:
+        assert session.scalars(select(Photo)).one().analysis_json == first_analysis
+
+
+def test_changed_source_invalidates_analysis_cache(app, tmp_path):
+    source = tmp_path / "photos"
+    image(source / "one.jpg", color="red")
+    scan(source, app.state.factory, app.state.settings.thumbnail_dir, Event(), lambda *_: None)
+    with app.state.factory() as session:
+        before = session.scalars(select(Photo)).one().analysis_source_signature
+    image(source / "one.jpg", color="blue", size=(81, 61))
+    scan(source, app.state.factory, app.state.settings.thumbnail_dir, Event(), lambda *_: None)
+    with app.state.factory() as session:
+        after = session.scalars(select(Photo)).one().analysis_source_signature
+    assert before != after
 
 
 def test_cancelled_scan_stops_before_work(app, tmp_path):

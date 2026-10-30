@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -8,9 +9,11 @@ from pathlib import Path
 from threading import Event
 from typing import Callable, Iterable
 from PIL import ExifTags, Image, UnidentifiedImageError
+import cv2
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from .models import Asset, Photo
+from .quality import MEASUREMENT_VERSION, QualityConfig, measure, recommend
 
 RENDERED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 RAW_EXTENSIONS = {".cr2", ".nef", ".arw", ".dng"}
@@ -99,7 +102,7 @@ def make_thumbnail(source: Path, destination: Path, size=(640, 640)) -> None:
     temporary.replace(destination)
 
 
-def scan(source: Path, factory: sessionmaker[Session], thumbnail_dir: Path, cancelled: Event, progress: Callable[[int, int, str], None]) -> tuple[int, int]:
+def scan(source: Path, factory: sessionmaker[Session], thumbnail_dir: Path, cancelled: Event, progress: Callable[[int, int, str], None], quality_config: QualityConfig = QualityConfig()) -> tuple[int, int]:
     groups = group_assets(discover(source))
     total, completed = len(groups), 0
     for paths in groups:
@@ -143,6 +146,22 @@ def scan(source: Path, factory: sessionmaker[Session], thumbnail_dir: Path, canc
             for source_path, asset in current.items():
                 if source_path not in seen:
                     session.delete(asset)
+            source_signature = f"{rendered.resolve()}:{rendered.stat().st_size}:{rendered.stat().st_mtime_ns}" if rendered else None
+            if rendered and not metadata.error:
+                try:
+                    if photo.analysis_version != MEASUREMENT_VERSION or photo.analysis_source_signature != source_signature or not photo.analysis_json:
+                        metrics = measure(rendered)
+                    else:
+                        metrics = json.loads(photo.analysis_json)["metrics"]
+                    decision = recommend(metrics, quality_config)
+                    photo.analysis_json = json.dumps({"metrics": metrics, "decision": decision}, separators=(",", ":"))
+                    photo.analysis_version = MEASUREMENT_VERSION
+                    photo.analysis_source_signature = source_signature
+                    photo.technical_score = decision["technical_score"]
+                    photo.recommendation = decision["recommendation"]
+                    photo.status = decision["recommendation"]
+                except (OSError, ValueError, cv2.error) as exc:
+                    photo.error = f"Technical analysis failed: {exc}"
             session.commit()
         completed += 1
         progress(completed, total, paths[0].name)

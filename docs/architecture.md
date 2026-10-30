@@ -1,4 +1,4 @@
-# Phase 1 architecture
+# Phase 1–2 architecture
 
 FRAME is a modular monolith. FastAPI owns the local API, SQLite persistence, and background scan coordinator. The React client talks only to that API. Imaging and ingestion functions do not depend on HTTP, and database rows store logical photographs separately from their source assets.
 
@@ -15,4 +15,8 @@ Stable photo identity is a SHA-256 digest of the canonical parent path and norma
 
 ## Next phase
 
-Technical analysis will add separately cached sharpness, exposure, clipping, contrast, and noise metrics. Recommendations will remain conservative and explanations will retain the underlying measurements.
+Phase 2 stores versioned technical measurements and their source signature in the existing photo row. Decision configuration is separate: changing thresholds recomputes recommendations from JSON metrics without decoding source images. An additive startup migration upgrades Phase 1 SQLite databases.
+
+Measurements are resolution-bounded and include Laplacian variance, Tenengrad energy, regional detail distribution, luminance percentiles, per-channel and luminance clipping, robust residual noise, entropy, and dynamic range. Recommendations use multiple signals and reserve REJECT for independent severe evidence or an explicitly less-conservative policy. They do not claim subject focus or calibrated confidence.
+
+Phase 3 will add perceptual similarity, burst grouping, and diversity-aware collection selection.

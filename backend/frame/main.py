@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -10,10 +11,20 @@ from .database import create_database, session_dependency
 from .ingestion import RAW_EXTENSIONS, RENDERED_EXTENSIONS, validate_source
 from .jobs import ScanCoordinator
 from .models import Photo
+from .quality import QualityConfig, recommend
 
 
 class ScanRequest(BaseModel):
     path: str
+
+
+class QualityConfigRequest(BaseModel):
+    version: int = 1
+    blur_sensitivity: float = 0.5
+    underexposure_tolerance: float = 0.65
+    highlight_clipping_tolerance: float = 0.02
+    noise_sensitivity: float = 0.5
+    rejection_conservativeness: float = 0.85
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -30,6 +41,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     def health():
         return {"status": "ok", "raw_preview": False, "rendered_formats": sorted(RENDERED_EXTENSIONS), "catalogued_raw_formats": sorted(RAW_EXTENSIONS)}
+
+    @app.get("/api/quality/config")
+    def get_quality_config():
+        return jobs.quality_config.__dict__
+
+    @app.put("/api/quality/config")
+    def put_quality_config(request: QualityConfigRequest, session: Session = Depends(db)):
+        try:
+            config = QualityConfig(**request.model_dump())
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        jobs.quality_config = config
+        updated = 0
+        for photo in session.scalars(select(Photo).where(Photo.analysis_json.is_not(None))):
+            payload = json.loads(photo.analysis_json)
+            decision = recommend(payload["metrics"], config)
+            payload["decision"] = decision
+            photo.analysis_json = json.dumps(payload, separators=(",", ":"))
+            photo.technical_score = decision["technical_score"]
+            photo.recommendation = decision["recommendation"]
+            photo.status = decision["recommendation"]
+            updated += 1
+        session.commit()
+        return {"config": config.__dict__, "recommendations_updated": updated, "measurements_rerun": False}
 
     @app.post("/api/scans", status_code=202)
     def start_scan(request: ScanRequest):
@@ -66,7 +101,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def _serialize(photo: Photo) -> dict:
-    return {"id": photo.id, "name": photo.display_name, "capture_time": photo.capture_time, "width": photo.width, "height": photo.height, "camera": photo.camera, "lens": photo.lens, "status": photo.status, "error": photo.error, "has_thumbnail": bool(photo.thumbnail_path), "assets": [{"path": a.source_path, "kind": a.kind, "extension": a.extension, "size": a.size} for a in photo.assets]}
+    analysis = json.loads(photo.analysis_json) if photo.analysis_json else None
+    return {"id": photo.id, "name": photo.display_name, "capture_time": photo.capture_time, "width": photo.width, "height": photo.height, "camera": photo.camera, "lens": photo.lens, "status": photo.status, "error": photo.error, "has_thumbnail": bool(photo.thumbnail_path), "technical_score": photo.technical_score, "recommendation": photo.recommendation, "analysis": analysis, "assets": [{"path": a.source_path, "kind": a.kind, "extension": a.extension, "size": a.size} for a in photo.assets]}
 
 
 app = create_app()
