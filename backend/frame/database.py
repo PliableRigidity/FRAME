@@ -25,6 +25,7 @@ def create_database(settings: Settings):
         "pinned": "BOOLEAN NOT NULL DEFAULT 0", "excluded": "BOOLEAN NOT NULL DEFAULT 0",
         "selected": "BOOLEAN NOT NULL DEFAULT 0", "selection_rank": "INTEGER",
         "selection_explanation": "TEXT",
+        "learned_json": "TEXT", "hybrid_score": "FLOAT", "context_profile": "VARCHAR(32)",
     }
     with engine.begin() as connection:
         for name, sql_type in additions.items():

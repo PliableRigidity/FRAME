@@ -36,6 +36,9 @@ class Photo(Base):
     selected: Mapped[bool] = mapped_column(Boolean, default=False)
     selection_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     selection_explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    learned_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hybrid_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    context_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), onupdate=lambda: datetime.now(UTC).replace(tzinfo=None))
     assets: Mapped[list["Asset"]] = relationship(back_populates="photo", cascade="all, delete-orphan")
 

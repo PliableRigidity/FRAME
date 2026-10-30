@@ -60,3 +60,7 @@ Benchmark an existing database with:
 ```powershell
 python benchmarks/evaluate_selection.py .frame-data/frame.db --target 50
 ```
+
+## Optional learned scoring
+
+FRAME supports checksum-verified local scalar-output ONNX IQA models, CPU/CUDA provider selection, batch inference, cancellation, cached results and classical/learned/hybrid ranking. It never downloads weights during ordinary use. See [docs/models.md](docs/models.md). No pretrained weights are bundled in this release, so classical mode is the default.

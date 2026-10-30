@@ -14,6 +14,7 @@ from .models import GroupMember, Photo, PhotoGroup
 from .quality import QualityConfig, recommend
 from .selection import ConstraintError, PROFILES, SelectionRequest, collection_metrics, select_collection
 from .exporting import safe_export
+from .ml import CONTEXTS, LearnedCoordinator, MLSettings, hybrid_score
 
 
 class ScanRequest(BaseModel):
@@ -47,13 +48,21 @@ class ExportRequest(BaseModel):
     metadata: str = "json"
 
 
+class MLSettingsRequest(BaseModel):
+    mode: str = "classical"
+    device: str = "auto"
+    classical_weight: float = .6
+    learned_weight: float = .4
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.load()
     engine, factory = create_database(settings)
     jobs = ScanCoordinator(factory, settings.thumbnail_dir)
+    learned = LearnedCoordinator(factory, settings.data_dir / "models" / "quality" / "model.json")
     app = FastAPI(title="FRAME", version="0.1.0")
     app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
-    app.state.settings, app.state.engine, app.state.factory, app.state.jobs = settings, engine, factory, jobs
+    app.state.settings, app.state.engine, app.state.factory, app.state.jobs, app.state.learned = settings, engine, factory, jobs, learned
 
     def db():
         yield from session_dependency(factory)
@@ -65,6 +74,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/quality/config")
     def get_quality_config():
         return jobs.quality_config.__dict__
+
+    @app.get("/api/ml/status")
+    def ml_status():
+        status = learned.status(); status.update(installed=learned.manifest_path.is_file(), settings=learned.settings.__dict__)
+        return status
+
+    @app.put("/api/ml/settings")
+    def ml_settings(request: MLSettingsRequest, session: Session = Depends(db)):
+        try: learned.settings = MLSettings(**request.model_dump())
+        except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+        for photo in session.scalars(select(Photo)):
+            learned_score = json.loads(photo.learned_json)["normalised_score"] if photo.learned_json else None
+            photo.hybrid_score = hybrid_score(photo.technical_score, learned_score, learned.settings)
+        session.commit(); return {"settings": learned.settings.__dict__, "inference_rerun": False}
+
+    @app.post("/api/ml/analyse", status_code=202)
+    def start_ml():
+        if not learned.manifest_path.is_file(): raise HTTPException(409, "No checksum-verified IQA model is installed")
+        try: return learned.start()
+        except RuntimeError as exc: raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/ml/cancel")
+    def cancel_ml(): return learned.cancel()
+
+    @app.put("/api/photos/{photo_id}/context/{profile}")
+    def set_context(photo_id: int, profile: str, session: Session = Depends(db)):
+        if profile not in CONTEXTS: raise HTTPException(422, "Unknown context profile")
+        photo = session.get(Photo, photo_id)
+        if not photo: raise HTTPException(404, "Photo not found")
+        photo.context_profile = profile; session.commit(); return _serialize(photo)
 
     @app.put("/api/quality/config")
     def put_quality_config(request: QualityConfigRequest, session: Session = Depends(db)):
@@ -175,7 +214,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def _serialize(photo: Photo) -> dict:
     analysis = json.loads(photo.analysis_json) if photo.analysis_json else None
-    return {"id": photo.id, "name": photo.display_name, "capture_time": photo.capture_time, "width": photo.width, "height": photo.height, "camera": photo.camera, "lens": photo.lens, "status": photo.status, "error": photo.error, "has_thumbnail": bool(photo.thumbnail_path), "technical_score": photo.technical_score, "recommendation": photo.recommendation, "analysis": analysis, "pinned": photo.pinned, "excluded": photo.excluded, "selected": photo.selected, "selection_rank": photo.selection_rank, "selection_explanation": photo.selection_explanation, "assets": [{"path": a.source_path, "kind": a.kind, "extension": a.extension, "size": a.size} for a in photo.assets]}
+    return {"id": photo.id, "name": photo.display_name, "capture_time": photo.capture_time, "width": photo.width, "height": photo.height, "camera": photo.camera, "lens": photo.lens, "status": photo.status, "error": photo.error, "has_thumbnail": bool(photo.thumbnail_path), "technical_score": photo.technical_score, "learned": json.loads(photo.learned_json) if photo.learned_json else None, "hybrid_score": photo.hybrid_score, "context_profile": photo.context_profile, "recommendation": photo.recommendation, "analysis": analysis, "pinned": photo.pinned, "excluded": photo.excluded, "selected": photo.selected, "selection_rank": photo.selection_rank, "selection_explanation": photo.selection_explanation, "assets": [{"path": a.source_path, "kind": a.kind, "extension": a.extension, "size": a.size} for a in photo.assets]}
 
 
 app = create_app()

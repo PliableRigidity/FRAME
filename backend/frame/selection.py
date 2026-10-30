@@ -30,7 +30,7 @@ class SelectionRequest:
 
 
 def quality(photo: Photo) -> float:
-    score = photo.technical_score if photo.technical_score is not None else 50.0
+    score = photo.hybrid_score if photo.hybrid_score is not None else photo.technical_score if photo.technical_score is not None else 50.0
     return max(0, min(1, score / 100))
 
 
