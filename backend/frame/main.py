@@ -10,8 +10,10 @@ from .config import Settings
 from .database import create_database, session_dependency
 from .ingestion import RAW_EXTENSIONS, RENDERED_EXTENSIONS, validate_source
 from .jobs import ScanCoordinator
-from .models import Photo
+from .models import GroupMember, Photo, PhotoGroup
 from .quality import QualityConfig, recommend
+from .selection import ConstraintError, PROFILES, SelectionRequest, collection_metrics, select_collection
+from .exporting import safe_export
 
 
 class ScanRequest(BaseModel):
@@ -25,6 +27,24 @@ class QualityConfigRequest(BaseModel):
     highlight_clipping_tolerance: float = 0.02
     noise_sensitivity: float = 0.5
     rejection_conservativeness: float = 0.85
+
+
+class CollectionRequest(BaseModel):
+    target: int
+    method: str = "diversity"
+    profile: str = "general"
+    diversity_weight: float | None = None
+
+
+class OverrideRequest(BaseModel):
+    pinned: bool | None = None
+    excluded: bool | None = None
+
+
+class ExportRequest(BaseModel):
+    destination: str
+    mode: str = "jpeg"
+    metadata: str = "json"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -87,6 +107,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rows = session.scalars(select(Photo).options(selectinload(Photo.assets)).order_by(Photo.capture_time.desc().nullslast(), Photo.id.desc()).offset(offset).limit(limit)).all()
         return {"total": total, "items": [_serialize(photo) for photo in rows]}
 
+    @app.get("/api/groups")
+    def groups(session: Session = Depends(db)):
+        rows = session.scalars(select(PhotoGroup).options(selectinload(PhotoGroup.members).selectinload(GroupMember.photo)).order_by(PhotoGroup.kind, PhotoGroup.id)).all()
+        return {"items": [{"id": g.id, "stable_id": g.stable_id, "kind": g.kind, "explanation": g.explanation, "lead_photo_id": g.lead_photo_id, "manual_lead": g.manual_lead, "members": [{"photo": _serialize(m.photo), "rank": m.relative_rank} for m in sorted(g.members, key=lambda x: x.relative_rank or 999)]} for g in rows]}
+
+    @app.put("/api/groups/{group_id}/lead/{photo_id}")
+    def set_group_lead(group_id: int, photo_id: int, session: Session = Depends(db)):
+        group = session.get(PhotoGroup, group_id)
+        if not group or not session.scalar(select(GroupMember).where(GroupMember.group_id == group_id, GroupMember.photo_id == photo_id)):
+            raise HTTPException(404, "Group member not found")
+        group.lead_photo_id, group.manual_lead = photo_id, True
+        session.commit()
+        return {"group_id": group_id, "lead_photo_id": photo_id, "manual_lead": True}
+
+    @app.patch("/api/photos/{photo_id}/selection")
+    def override_photo(photo_id: int, request: OverrideRequest, session: Session = Depends(db)):
+        photo = session.get(Photo, photo_id)
+        if not photo: raise HTTPException(404, "Photo not found")
+        if request.pinned is not None: photo.pinned = request.pinned
+        if request.excluded is not None: photo.excluded = request.excluded
+        if photo.pinned and photo.excluded: raise HTTPException(409, "A photograph cannot be pinned and excluded")
+        session.commit(); return _serialize(photo)
+
+    @app.get("/api/selection/profiles")
+    def profiles():
+        return PROFILES
+
+    @app.post("/api/selection")
+    def build_collection(request: CollectionRequest, session: Session = Depends(db)):
+        photos = list(session.scalars(select(Photo).options(selectinload(Photo.assets))))
+        memberships: dict[int, set[str]] = {}
+        for member, group in session.execute(select(GroupMember, PhotoGroup).join(PhotoGroup).where(PhotoGroup.kind.in_(["exact", "near", "burst"]))):
+            memberships.setdefault(member.photo_id, set()).add(group.stable_id)
+        try:
+            spec = SelectionRequest(request.target, request.method, request.profile, request.diversity_weight)  # type: ignore[arg-type]
+            chosen = select_collection(photos, spec, memberships)
+        except ConstraintError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        selected_ids = {photo.id for photo, _ in chosen}
+        for photo in photos:
+            photo.selected = photo.id in selected_ids
+            photo.selection_rank = next((rank for rank, (item, _) in enumerate(chosen, 1) if item.id == photo.id), None)
+            photo.selection_explanation = next((reason for item, reason in chosen if item.id == photo.id), None)
+        session.commit()
+        return {"items": [_serialize(photo) for photo, _ in chosen], "metrics": collection_metrics([p for p, _ in chosen], photos)}
+
+    @app.post("/api/selection/export")
+    def export_selection(request: ExportRequest, session: Session = Depends(db)):
+        if request.mode not in {"jpeg", "pairs"} or request.metadata not in {"json", "csv"}:
+            raise HTTPException(422, "Unsupported export mode")
+        photos = list(session.scalars(select(Photo).options(selectinload(Photo.assets)).where(Photo.selected.is_(True)).order_by(Photo.selection_rank)))
+        return safe_export(photos, Path(request.destination), request.mode, request.metadata)
+
     @app.get("/api/photos/{photo_id}/thumbnail")
     def thumbnail(photo_id: int, session: Session = Depends(db)):
         photo = session.get(Photo, photo_id)
@@ -102,7 +175,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def _serialize(photo: Photo) -> dict:
     analysis = json.loads(photo.analysis_json) if photo.analysis_json else None
-    return {"id": photo.id, "name": photo.display_name, "capture_time": photo.capture_time, "width": photo.width, "height": photo.height, "camera": photo.camera, "lens": photo.lens, "status": photo.status, "error": photo.error, "has_thumbnail": bool(photo.thumbnail_path), "technical_score": photo.technical_score, "recommendation": photo.recommendation, "analysis": analysis, "assets": [{"path": a.source_path, "kind": a.kind, "extension": a.extension, "size": a.size} for a in photo.assets]}
+    return {"id": photo.id, "name": photo.display_name, "capture_time": photo.capture_time, "width": photo.width, "height": photo.height, "camera": photo.camera, "lens": photo.lens, "status": photo.status, "error": photo.error, "has_thumbnail": bool(photo.thumbnail_path), "technical_score": photo.technical_score, "recommendation": photo.recommendation, "analysis": analysis, "pinned": photo.pinned, "excluded": photo.excluded, "selected": photo.selected, "selection_rank": photo.selection_rank, "selection_explanation": photo.selection_explanation, "assets": [{"path": a.source_path, "kind": a.kind, "extension": a.extension, "size": a.size} for a in photo.assets]}
 
 
 app = create_app()

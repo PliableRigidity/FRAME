@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from .models import Asset, Photo
 from .quality import MEASUREMENT_VERSION, QualityConfig, measure, recommend
+from .similarity import FEATURE_VERSION, extract_features, persist_groups, sha256_file
 
 RENDERED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 RAW_EXTENSIONS = {".cr2", ".nef", ".arw", ".dng"}
@@ -160,9 +161,17 @@ def scan(source: Path, factory: sessionmaker[Session], thumbnail_dir: Path, canc
                     photo.technical_score = decision["technical_score"]
                     photo.recommendation = decision["recommendation"]
                     photo.status = decision["recommendation"]
+                    if photo.feature_version != FEATURE_VERSION or photo.feature_source_signature != source_signature or not photo.feature_json:
+                        photo.content_hash = sha256_file(rendered, cancelled)
+                        photo.feature_json = json.dumps(extract_features(rendered), separators=(",", ":"))
+                        photo.feature_version = FEATURE_VERSION
+                        photo.feature_source_signature = source_signature
                 except (OSError, ValueError, cv2.error) as exc:
                     photo.error = f"Technical analysis failed: {exc}"
             session.commit()
         completed += 1
         progress(completed, total, paths[0].name)
+    if not cancelled.is_set():
+        with factory() as session:
+            persist_groups(session)
     return completed, total

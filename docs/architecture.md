@@ -1,4 +1,4 @@
-# Phase 1–2 architecture
+# Phase 1–3 architecture
 
 FRAME is a modular monolith. FastAPI owns the local API, SQLite persistence, and background scan coordinator. The React client talks only to that API. Imaging and ingestion functions do not depend on HTTP, and database rows store logical photographs separately from their source assets.
 
@@ -19,4 +19,8 @@ Phase 2 stores versioned technical measurements and their source signature in th
 
 Measurements are resolution-bounded and include Laplacian variance, Tenengrad energy, regional detail distribution, luminance percentiles, per-channel and luminance clipping, robust residual noise, entropy, and dynamic range. Recommendations use multiple signals and reserve REJECT for independent severe evidence or an explicitly less-conservative policy. They do not claim subject focus or calibrated confidence.
 
-Phase 3 will add perceptual similarity, burst grouping, and diversity-aware collection selection.
+Phase 3 adds cached content/perceptual features and normalized group membership tables. Candidate generation uses 16-bit pHash bands, preventing unconditional all-pairs comparisons; candidates are checked with pHash, dHash and HSV histogram intersection. Exact, near, burst and conservative similar-scene groups remain distinct.
+
+Selection exposes quality-only, group-representative and diversity-aware greedy baselines. The diversity method uses an interpretable MMR-style quality-minus-redundancy utility with deterministic tie-breaking. Pins and exclusions are persisted hard constraints. Exports use `copy2`, collision-safe stable-ID suffixes and only report completion after every copy succeeds.
+
+Learned semantic embeddings and calibrated profile weights remain Phase 4 work. Current scene grouping detects visual composition, not semantic identity.

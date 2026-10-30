@@ -20,6 +20,11 @@ def create_database(settings: Settings):
         "technical_score": "FLOAT", "recommendation": "VARCHAR(16)",
         "analysis_json": "TEXT", "analysis_version": "VARCHAR(32)",
         "analysis_source_signature": "VARCHAR(128)",
+        "content_hash": "VARCHAR(64)", "feature_json": "TEXT",
+        "feature_version": "VARCHAR(32)", "feature_source_signature": "VARCHAR(128)",
+        "pinned": "BOOLEAN NOT NULL DEFAULT 0", "excluded": "BOOLEAN NOT NULL DEFAULT 0",
+        "selected": "BOOLEAN NOT NULL DEFAULT 0", "selection_rank": "INTEGER",
+        "selection_explanation": "TEXT",
     }
     with engine.begin() as connection:
         for name, sql_type in additions.items():

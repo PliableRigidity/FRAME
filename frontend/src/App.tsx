@@ -2,8 +2,9 @@ import { FormEvent, useEffect, useState } from 'react'
 type Asset = { path: string; kind: string; extension: string; size: number }
 type Decision = { technical_score: number; recommendation: string; primary_problems: string[]; secondary_problems: string[]; explanations: string[]; score_note: string }
 type Metrics = { mean_luminance: number; highlight_clipping: number; detailed_region_fraction: number }
-type Photo = { id: number; name: string; width?: number; height?: number; camera?: string; status: string; error?: string; has_thumbnail: boolean; technical_score?: number; recommendation?: string; analysis?: { metrics: Metrics; decision: Decision }; assets: Asset[] }
+type Photo = { id: number; name: string; width?: number; height?: number; camera?: string; status: string; error?: string; has_thumbnail: boolean; technical_score?: number; recommendation?: string; analysis?: { metrics: Metrics; decision: Decision }; pinned?: boolean; excluded?: boolean; selected?: boolean; selection_rank?: number; selection_explanation?: string; assets: Asset[] }
 type Job = { state: string; source?: string; completed: number; total: number; current_file?: string; error?: string }
+type Group = { id: number; kind: string; explanation: string; lead_photo_id: number; members: { photo: Photo; rank: number }[] }
 
 export function App() {
   const [path, setPath] = useState('')
@@ -12,11 +13,19 @@ export function App() {
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('ALL')
   const [sort, setSort] = useState('capture')
+  const [groups, setGroups] = useState<Group[]>([])
+  const [target, setTarget] = useState(50)
+  const [profile, setProfile] = useState('general')
+  const [method, setMethod] = useState('diversity')
+  const [diversity, setDiversity] = useState(.35)
+  const [exportPath, setExportPath] = useState('')
+  const [selectionMetrics, setSelectionMetrics] = useState<{ selected_count: number; average_technical_quality?: number; average_pair_similarity: number } | null>(null)
   async function loadPhotos() { const response = await fetch('/api/photos?limit=500'); if (response.ok) setPhotos((await response.json()).items) }
-  useEffect(() => { void loadPhotos() }, [])
+  async function loadGroups() { const response = await fetch('/api/groups'); if (response.ok) setGroups((await response.json()).items || []) }
+  useEffect(() => { void loadPhotos(); void loadGroups() }, [])
   useEffect(() => {
     if (job.state !== 'running') return
-    const timer = window.setInterval(async () => { const next = await (await fetch('/api/scans/current')).json(); setJob(next); if (next.state !== 'running') void loadPhotos() }, 500)
+    const timer = window.setInterval(async () => { const next = await (await fetch('/api/scans/current')).json(); setJob(next); if (next.state !== 'running') { void loadPhotos(); void loadGroups() } }, 500)
     return () => window.clearInterval(timer)
   }, [job.state])
   async function start(event: FormEvent) {
@@ -26,6 +35,10 @@ export function App() {
     if (!response.ok) setError(body.detail || 'Unable to start scan'); else setJob(body)
   }
   async function cancel() { setJob(await (await fetch('/api/scans/current/cancel', { method: 'POST' })).json()) }
+  async function generateSelection() { const response = await fetch('/api/selection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target, profile, method, diversity_weight: diversity }) }); const body = await response.json(); if (response.ok) { setSelectionMetrics(body.metrics); void loadPhotos() } else setError(body.detail) }
+  async function exportSelection() { const response = await fetch('/api/selection/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ destination: exportPath, mode: 'pairs', metadata: 'json' }) }); const body = await response.json(); if (!response.ok || !body.complete) setError(body.detail || 'Some files could not be exported') }
+  async function override(photo: Photo, field: 'pinned' | 'excluded') { await fetch(`/api/photos/${photo.id}/selection`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [field]: !photo[field] }) }); void loadPhotos() }
+  async function chooseLead(groupId: number, photoId: number) { await fetch(`/api/groups/${groupId}/lead/${photoId}`, { method: 'PUT' }); void loadGroups() }
   const progress = job.total ? Math.round(job.completed / job.total * 100) : 0
   const visible = photos.filter(photo => filter === 'ALL' || photo.recommendation === filter).sort((a, b) => sort === 'quality' ? (b.technical_score ?? -1) - (a.technical_score ?? -1) : b.id - a.id)
   return <main>
@@ -36,12 +49,14 @@ export function App() {
       {error && <p className="error" role="alert">{error}</p>}
       {job.state !== 'idle' && <div className="progress"><div><strong>{job.state === 'running' ? `Scanning ${job.current_file || '…'}` : `Scan ${job.state}`}</strong><span>{job.completed} / {job.total}</span></div><progress max="100" value={progress}/>{job.state === 'running' && <button className="quiet" onClick={cancel}>Cancel safely</button>}{job.error && <p className="error">{job.error}</p>}</div>}
     </section>
+    <section className="builder"><div><span className="eyebrow">COLLECTION BUILDER</span><h2>Build a balanced shortlist</h2><p>Explicit pins and exclusions are preserved.</p></div><label>Target<input aria-label="Selection target" type="number" min="0" value={target} onChange={e => setTarget(Number(e.target.value))}/></label><label>Profile<select aria-label="Selection profile" value={profile} onChange={e => setProfile(e.target.value)}><option value="general">General</option><option value="travel">Travel</option><option value="portrait">Portrait</option><option value="landscape">Landscape</option><option value="sports">Sports</option></select></label><label>Method<select aria-label="Selection method" value={method} onChange={e => setMethod(e.target.value)}><option value="diversity">Diversity-aware</option><option value="grouped">Group representatives</option><option value="quality">Quality only</option></select></label><label>Diversity {Math.round(diversity * 100)}%<input aria-label="Diversity importance" type="range" min="0" max="1" step="0.05" value={diversity} onChange={e => setDiversity(Number(e.target.value))}/></label><button onClick={generateSelection}>Generate collection</button>{selectionMetrics && <><div className="collection-metrics"><strong>{selectionMetrics.selected_count} selected</strong><span>Average quality {selectionMetrics.average_technical_quality ?? '—'}</span><span>Redundancy {Math.round(selectionMetrics.average_pair_similarity * 100)}%</span></div><label>Export directory<input aria-label="Export directory" value={exportPath} onChange={e => setExportPath(e.target.value)}/></label><button disabled={!exportPath} onClick={exportSelection}>Export RAW + JPEG pairs</button></>}</section>
+    {groups.length > 0 && <section className="groups"><div className="gallery-heading"><div><span className="eyebrow">SIMILARITY</span><h2>{groups.length} groups</h2></div><p>Exact, near-duplicate, burst and conservative scene groups.</p></div><div className="group-grid">{groups.map(group => <details className="group" key={group.id}><summary><strong>{group.kind.toUpperCase()}</strong><span>{group.members.length} photographs</span></summary><p>{group.explanation}</p><div className="member-strip">{group.members.map(member => <button className={member.photo.id === group.lead_photo_id ? 'lead' : ''} key={member.photo.id} onClick={() => chooseLead(group.id, member.photo.id)}>{member.photo.has_thumbnail && <img src={`/api/photos/${member.photo.id}/thumbnail`} alt=""/>}<span>{member.photo.name}</span><small>{member.photo.id === group.lead_photo_id ? 'LEAD' : 'Choose lead'}</small></button>)}</div></details>)}</div></section>}
     <section className="gallery-heading"><div><span className="eyebrow">LIBRARY</span><h2>{visible.length} of {photos.length} photographs</h2></div><div className="controls"><label>Recommendation<select aria-label="Recommendation filter" value={filter} onChange={e => setFilter(e.target.value)}><option>ALL</option><option>KEEP</option><option>REVIEW</option><option>REJECT</option></select></label><label>Sort<select aria-label="Sort photographs" value={sort} onChange={e => setSort(e.target.value)}><option value="capture">Recently imported</option><option value="quality">Technical quality</option></select></label></div></section>
     {photos.length === 0 ? <div className="empty"><h3>Your gallery is ready for a first import.</h3><p>FRAME only reads source files. Cached previews are stored separately.</p></div> : <div className="grid">{visible.map(photo => <article key={photo.id} className="card">
       <div className="thumb">{photo.has_thumbnail ? <img src={`/api/photos/${photo.id}/thumbnail`} alt="" loading="lazy"/> : <span>RAW</span>}<span className={`badge ${(photo.recommendation || 'pending').toLowerCase()}`}>{photo.recommendation || 'PENDING'}</span></div>
       <div className="details"><div className="title-row"><h3>{photo.name}</h3>{photo.technical_score != null && <strong title="Heuristic index, not a probability">{Math.round(photo.technical_score)}<small>/100</small></strong>}</div><p>{photo.width ? `${photo.width} × ${photo.height}` : 'Preview unavailable'}{photo.camera ? ` · ${photo.camera}` : ''}</p><p>{photo.assets.map(a => a.extension.slice(1).toUpperCase()).join(' + ')}</p>
       {photo.analysis && <><div className="metric-row"><span>Detail {Math.round(photo.analysis.metrics.detailed_region_fraction * 100)}%</span><span>Light {Math.round(photo.analysis.metrics.mean_luminance * 100)}%</span><span>Clipped {(photo.analysis.metrics.highlight_clipping * 100).toFixed(1)}%</span></div><details><summary>Why this recommendation?</summary>{[...photo.analysis.decision.primary_problems, ...photo.analysis.decision.secondary_problems].map(problem => <span className="problem" key={problem}>{problem}</span>)}{photo.analysis.decision.explanations.map(text => <p key={text}>{text}</p>)}<p className="score-note">{photo.analysis.decision.score_note}</p></details></>}
-      {photo.error && <p className="warning">{photo.error}</p>}</div>
+      <div className="card-actions"><button className={photo.pinned ? 'active' : ''} onClick={() => override(photo, 'pinned')}>Pin</button><button className={photo.excluded ? 'active danger' : ''} onClick={() => override(photo, 'excluded')}>Exclude</button></div>{photo.selected && <p className="selected-note">#{photo.selection_rank} · {photo.selection_explanation}</p>}{photo.error && <p className="warning">{photo.error}</p>}</div>
     </article>)}</div>}
   </main>
 }

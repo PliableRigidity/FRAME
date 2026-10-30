@@ -48,3 +48,15 @@ python benchmarks/evaluate_quality.py labels.csv --output report.json
 ```
 
 No representative real-world labelled set is bundled, so calibration remains incomplete.
+
+## Similarity and collection selection
+
+Phase 3 caches SHA-256 file hashes, pHash, dHash and compact HSV histograms. Exact duplicates use content hashes. Near-duplicate and scene candidates come from pHash band buckets and are verified with hash distance plus colour similarity. Bursts additionally require close capture times. These lightweight groups are intentionally conservative and are not semantic understanding.
+
+The collection builder supports quality-only, group-first and diversity-aware MMR-style selection. General, Travel, Portrait, Landscape and Sports profiles are documented heuristic weights. Pins and exclusions are hard constraints. Selected JPEGs or RAW/JPEG pairs can be exported through `/api/selection/export`; originals are copied with metadata and never modified.
+
+Benchmark an existing database with:
+
+```powershell
+python benchmarks/evaluate_selection.py .frame-data/frame.db --target 50
+```
