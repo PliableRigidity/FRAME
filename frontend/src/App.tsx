@@ -27,6 +27,7 @@ export function App() {
   const [reviews, setReviews] = useState<ReviewItem[]>([])
   const [preferenceProfile, setPreferenceProfile] = useState<number | null>(null)
   const [pair, setPair] = useState<{a: Photo; b: Photo} | null>(null)
+  const [exportStatus, setExportStatus] = useState<{state: string; completed: number; total: number; errors: unknown[]} | null>(null)
   async function loadPhotos() { const response = await fetch('/api/photos?limit=500'); if (response.ok) setPhotos((await response.json()).items) }
   async function loadGroups() { const response = await fetch('/api/groups'); if (response.ok) setGroups((await response.json()).items || []) }
   useEffect(() => { void loadPhotos(); void loadGroups(); void fetch('/api/ml/status').then(r => r.json()).then(data => { if (data.settings) setMl(data) }) }, [])
@@ -43,16 +44,18 @@ export function App() {
   }
   async function cancel() { setJob(await (await fetch('/api/scans/current/cancel', { method: 'POST' })).json()) }
   async function generateSelection() { const response = await fetch('/api/selection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target, profile, method, diversity_weight: diversity }) }); const body = await response.json(); if (response.ok) { setSelectionMetrics(body.metrics); void loadPhotos() } else setError(body.detail) }
-  async function exportSelection() { const response = await fetch('/api/selection/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ destination: exportPath, mode: 'pairs', metadata: 'json' }) }); const body = await response.json(); if (!response.ok || !body.complete) setError(body.detail || 'Some files could not be exported') }
+  async function exportSelection() { const response = await fetch('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ destination: exportPath, mode: 'pairs', metadata: 'json' }) }); const body = await response.json(); if (!response.ok) setError(body.detail || 'Export could not start'); else setExportStatus(body) }
   async function override(photo: Photo, field: 'pinned' | 'excluded') { await fetch(`/api/photos/${photo.id}/selection`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [field]: !photo[field] }) }); void loadPhotos() }
   async function chooseLead(groupId: number, photoId: number) { await fetch(`/api/groups/${groupId}/lead/${photoId}`, { method: 'PUT' }); void loadGroups() }
   async function loadReviews() { const body = await (await fetch(`/api/review/queue?budget=${reviewBudget}`)).json(); setReviews(body.items || []) }
   async function startPreferences() { const profiles = await (await fetch('/api/preferences/profiles')).json(); let id = profiles.items?.[0]?.id; if (!id) id = (await (await fetch('/api/preferences/profiles', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:'Default'})})).json()).id; setPreferenceProfile(id); const body = await (await fetch(`/api/preferences/profiles/${id}/pair`)).json(); setPair(body.pair) }
   async function choosePreference(choice: string) { if (!pair || !preferenceProfile) return; await fetch(`/api/preferences/profiles/${preferenceProfile}/feedback`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({photo_a_id:pair.a.id, photo_b_id:pair.b.id, choice})}); const body = await (await fetch(`/api/preferences/profiles/${preferenceProfile}/pair`)).json(); setPair(body.pair) }
   useEffect(() => { if (!pair) return; const key = (event: KeyboardEvent) => { if (event.key === 'ArrowLeft') void choosePreference('a'); if (event.key === 'ArrowRight') void choosePreference('b'); if (event.key === '=') void choosePreference('equal'); if (event.key.toLowerCase() === 's') void choosePreference('skip') }; window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key) }, [pair, preferenceProfile])
+  useEffect(() => { if (exportStatus?.state !== 'running') return; const timer = window.setInterval(async () => setExportStatus(await (await fetch('/api/exports/current')).json()), 500); return () => window.clearInterval(timer) }, [exportStatus?.state])
   const progress = job.total ? Math.round(job.completed / job.total * 100) : 0
   const visible = photos.filter(photo => filter === 'ALL' || photo.recommendation === filter).sort((a, b) => sort === 'quality' ? (b.technical_score ?? -1) - (a.technical_score ?? -1) : b.id - a.id)
   return <main>
+    {exportStatus && <div className="progress"><strong>Export {exportStatus.state}</strong><span>{exportStatus.completed}/{exportStatus.total}{exportStatus.errors.length ? ` · ${exportStatus.errors.length} errors` : ''}</span>{exportStatus.state === 'running' && <button onClick={() => fetch('/api/exports/current/cancel', {method:'POST'})}>Cancel export</button>}</div>}
     <header><div><span className="eyebrow">LOCAL PHOTO CULLING</span><h1>FRAME</h1></div><p>Your photographs stay on this computer.</p></header>
     <section className="import-panel">
       <div><h2>Import a collection</h2><p>Enter a local, mounted drive, or network directory. Subdirectories are included.</p></div>

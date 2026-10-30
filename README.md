@@ -11,7 +11,7 @@ Requirements: Python 3.12+ and Node.js 20+.
 .\scripts\dev.ps1
 ```
 
-Open <http://127.0.0.1:5173>. The API is at <http://127.0.0.1:8000/docs>.
+For development, open <http://127.0.0.1:5173>. For the production-style single-process launcher run `scripts\launch.ps1` and open <http://127.0.0.1:8000>. API documentation is at `/docs`.
 
 For backend-only use:
 
@@ -36,6 +36,8 @@ cd frontend; npm test -- --run; npm run build
 ```
 
 See [docs/architecture.md](docs/architecture.md) for design and known limitations.
+
+Release documentation: [installation](docs/installation.md), [user guide](docs/user-guide.md), [models](docs/models.md), [troubleshooting](docs/troubleshooting.md), and [1.0.0 release notes](docs/release-notes-1.0.0.md).
 
 ## Technical analysis
 

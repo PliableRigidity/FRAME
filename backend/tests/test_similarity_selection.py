@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageEnhance
 
-from frame.exporting import safe_export
+from frame.exporting import safe_export, validate_export_destination
 from frame.ingestion import scan
 from frame.models import Asset, Photo
 from frame.selection import ConstraintError, SelectionRequest, select_collection
@@ -83,6 +83,7 @@ def test_safe_export_preserves_source_and_handles_collision(tmp_path):
     assert first["complete"] and second["complete"]
     assert len(list(destination.glob("*.jpg"))) == 2
     assert source.read_bytes() == before
+    with pytest.raises(ValueError): validate_export_destination(source_dir, [item])
 
 
 def test_similarity_cache_invalidation(app, tmp_path):

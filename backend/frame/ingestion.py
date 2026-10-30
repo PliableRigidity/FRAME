@@ -103,6 +103,25 @@ def make_thumbnail(source: Path, destination: Path, size=(640, 640)) -> None:
     temporary.replace(destination)
 
 
+def make_raw_thumbnail(source: Path, destination: Path, size=(640, 640)) -> ImageMetadata:
+    try:
+        import rawpy
+    except ImportError as exc:
+        raise RuntimeError("RAW preview requires optional rawpy support") from exc
+    with rawpy.imread(str(source)) as raw:
+        try:
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                image = Image.open(__import__("io").BytesIO(thumb.data))
+            else:
+                image = Image.fromarray(thumb.data)
+        except (rawpy.LibRawNoThumbnailError, rawpy.LibRawUnsupportedThumbnailError):
+            image = Image.fromarray(raw.postprocess(half_size=True, use_camera_wb=True, output_bps=8))
+        width, height = image.size; destination.parent.mkdir(parents=True, exist_ok=True)
+        image.thumbnail(size); image.convert("RGB").save(destination, "JPEG", quality=85, optimize=True)
+        return ImageMetadata(width=width, height=height)
+
+
 def scan(source: Path, factory: sessionmaker[Session], thumbnail_dir: Path, cancelled: Event, progress: Callable[[int, int, str], None], quality_config: QualityConfig = QualityConfig()) -> tuple[int, int]:
     groups = group_assets(discover(source))
     total, completed = len(groups), 0
@@ -113,6 +132,13 @@ def scan(source: Path, factory: sessionmaker[Session], thumbnail_dir: Path, canc
         metadata = read_metadata(rendered) if rendered else ImageMetadata()
         identifier = stable_id(paths[0])
         thumb = thumbnail_dir / f"{identifier}.jpg"
+        analysis_source = rendered
+        if rendered is None:
+            try:
+                metadata = make_raw_thumbnail(paths[0], thumb)
+                analysis_source = thumb
+            except (RuntimeError, OSError, ValueError) as exc:
+                metadata.error = str(exc)
         if rendered and not metadata.error:
             newest = max(p.stat().st_mtime_ns for p in paths)
             if not thumb.exists() or thumb.stat().st_mtime_ns < newest:
@@ -129,7 +155,7 @@ def scan(source: Path, factory: sessionmaker[Session], thumbnail_dir: Path, canc
             photo.display_name = paths[0].stem
             photo.width, photo.height = metadata.width, metadata.height
             photo.capture_time, photo.camera, photo.lens = metadata.capture_time, metadata.camera, metadata.lens
-            photo.error = metadata.error or ("RAW preview unavailable" if rendered is None else None)
+            photo.error = metadata.error
             photo.thumbnail_path = str(thumb) if thumb.exists() else None
             current = {asset.source_path: asset for asset in photo.assets}
             seen: set[str] = set()
@@ -147,11 +173,12 @@ def scan(source: Path, factory: sessionmaker[Session], thumbnail_dir: Path, canc
             for source_path, asset in current.items():
                 if source_path not in seen:
                     session.delete(asset)
-            source_signature = f"{rendered.resolve()}:{rendered.stat().st_size}:{rendered.stat().st_mtime_ns}" if rendered else None
-            if rendered and not metadata.error:
+            signature_source = paths[0] if rendered is None else rendered
+            source_signature = f"{signature_source.resolve()}:{signature_source.stat().st_size}:{signature_source.stat().st_mtime_ns}" if analysis_source else None
+            if analysis_source and not metadata.error:
                 try:
                     if photo.analysis_version != MEASUREMENT_VERSION or photo.analysis_source_signature != source_signature or not photo.analysis_json:
-                        metrics = measure(rendered)
+                        metrics = measure(analysis_source)
                     else:
                         metrics = json.loads(photo.analysis_json)["metrics"]
                     decision = recommend(metrics, quality_config)
@@ -162,8 +189,8 @@ def scan(source: Path, factory: sessionmaker[Session], thumbnail_dir: Path, canc
                     photo.recommendation = decision["recommendation"]
                     photo.status = decision["recommendation"]
                     if photo.feature_version != FEATURE_VERSION or photo.feature_source_signature != source_signature or not photo.feature_json:
-                        photo.content_hash = sha256_file(rendered, cancelled)
-                        photo.feature_json = json.dumps(extract_features(rendered), separators=(",", ":"))
+                        photo.content_hash = sha256_file(signature_source, cancelled)
+                        photo.feature_json = json.dumps(extract_features(analysis_source), separators=(",", ":"))
                         photo.feature_version = FEATURE_VERSION
                         photo.feature_source_signature = source_signature
                 except (OSError, ValueError, cv2.error) as exc:

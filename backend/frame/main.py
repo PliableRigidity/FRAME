@@ -1,8 +1,12 @@
 from pathlib import Path
 import json
+import importlib.util
+import logging
+import platform
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -13,9 +17,10 @@ from .jobs import ScanCoordinator
 from .models import GroupMember, PairwiseFeedback, Photo, PhotoGroup, PreferenceProfile
 from .quality import QualityConfig, recommend
 from .selection import ConstraintError, PROFILES, SelectionRequest, collection_metrics, select_collection
-from .exporting import safe_export
+from .exporting import ExportCoordinator, safe_export
 from .ml import CONTEXTS, LearnedCoordinator, MLSettings, hybrid_score
 from .preferences import next_pair, retrain, review_queue
+from . import __version__
 
 
 class ScanRequest(BaseModel):
@@ -68,20 +73,26 @@ class FeedbackRequest(BaseModel):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    logging.basicConfig(level=logging.INFO, format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":"%(message)s"}')
     settings = settings or Settings.load()
     engine, factory = create_database(settings)
     jobs = ScanCoordinator(factory, settings.thumbnail_dir)
     learned = LearnedCoordinator(factory, settings.data_dir / "models" / "quality" / "model.json")
-    app = FastAPI(title="FRAME", version="0.1.0")
+    exports = ExportCoordinator(factory)
+    app = FastAPI(title="FRAME", version=__version__)
     app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
-    app.state.settings, app.state.engine, app.state.factory, app.state.jobs, app.state.learned = settings, engine, factory, jobs, learned
+    app.state.settings, app.state.engine, app.state.factory, app.state.jobs, app.state.learned, app.state.exports = settings, engine, factory, jobs, learned, exports
 
     def db():
         yield from session_dependency(factory)
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "raw_preview": False, "rendered_formats": sorted(RENDERED_EXTENSIONS), "catalogued_raw_formats": sorted(RAW_EXTENSIONS)}
+        return {"status": "ok", "version": __version__, "raw_preview": bool(importlib.util.find_spec("rawpy")), "rendered_formats": sorted(RENDERED_EXTENSIONS), "catalogued_raw_formats": sorted(RAW_EXTENSIONS)}
+
+    @app.get("/api/diagnostics")
+    def diagnostics():
+        return {"version": __version__, "python": platform.python_version(), "platform": platform.system(), "database": "sqlite", "scan": jobs.status(), "ml": learned.status(), "export": exports.status(), "privacy": "Local processing; no telemetry or upload endpoints."}
 
     @app.get("/api/quality/config")
     def get_quality_config():
@@ -264,6 +275,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         photos = list(session.scalars(select(Photo).options(selectinload(Photo.assets)).where(Photo.selected.is_(True)).order_by(Photo.selection_rank)))
         return safe_export(photos, Path(request.destination), request.mode, request.metadata)
 
+    @app.post("/api/exports", status_code=202)
+    def start_export(request: ExportRequest):
+        if request.mode not in {"jpeg", "pairs"} or request.metadata not in {"json", "csv"}: raise HTTPException(422, "Unsupported export mode")
+        try: return exports.start(Path(request.destination), request.mode, request.metadata)
+        except RuntimeError as exc: raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/exports/current")
+    def export_status(): return exports.status()
+
+    @app.post("/api/exports/current/cancel")
+    def cancel_export(): return exports.cancel()
+
     @app.get("/api/photos/{photo_id}/thumbnail")
     def thumbnail(photo_id: int, session: Session = Depends(db)):
         photo = session.get(Photo, photo_id)
@@ -274,6 +297,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Thumbnail unavailable")
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
+    frontend = Path(__file__).parents[2] / "frontend" / "dist"
+    if not frontend.is_dir(): frontend = Path(__file__).parent / "static"
+    if frontend.is_dir(): app.mount("/", StaticFiles(directory=frontend, html=True), name="frontend")
     return app
 
 

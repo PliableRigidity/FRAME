@@ -65,3 +65,17 @@ def test_groups_selection_overrides_and_export(client, tmp_path):
     exported = client.post("/api/selection/export", json={"destination": str(destination), "mode": "jpeg", "metadata": "json"})
     assert exported.status_code == 200 and exported.json()["complete"]
     assert (destination / "frame-selection.json").exists()
+
+
+def test_diagnostics_and_async_export(client, tmp_path):
+    diagnostics = client.get("/api/diagnostics").json()
+    assert diagnostics["version"] == "1.0.0" and "no telemetry" in diagnostics["privacy"].lower()
+    destination = tmp_path / "async-export"
+    response = client.post("/api/exports", json={"destination": str(destination), "mode": "pairs", "metadata": "json"})
+    assert response.status_code == 202
+    for _ in range(100):
+        status = client.get("/api/exports/current").json()
+        if status["state"] != "running": break
+        time.sleep(.01)
+    assert status["state"] == "completed"
+    assert (destination / "frame-export-manifest.json").exists()
