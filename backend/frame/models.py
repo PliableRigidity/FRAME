@@ -39,6 +39,8 @@ class Photo(Base):
     learned_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     hybrid_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     context_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    preference_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    review_priority: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), onupdate=lambda: datetime.now(UTC).replace(tzinfo=None))
     assets: Mapped[list["Asset"]] = relationship(back_populates="photo", cascade="all, delete-orphan")
 
@@ -77,3 +79,22 @@ class GroupMember(Base):
     relative_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     group: Mapped[PhotoGroup] = relationship(back_populates="members")
     photo: Mapped[Photo] = relationship()
+
+
+class PreferenceProfile(Base):
+    __tablename__ = "preference_profiles"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    model_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_version: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class PairwiseFeedback(Base):
+    __tablename__ = "pairwise_feedback"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("preference_profiles.id", ondelete="CASCADE"), index=True)
+    photo_a_id: Mapped[int] = mapped_column(ForeignKey("photos.id", ondelete="CASCADE"))
+    photo_b_id: Mapped[int] = mapped_column(ForeignKey("photos.id", ondelete="CASCADE"))
+    choice: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))

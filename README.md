@@ -64,3 +64,9 @@ python benchmarks/evaluate_selection.py .frame-data/frame.db --target 50
 ## Optional learned scoring
 
 FRAME supports checksum-verified local scalar-output ONNX IQA models, CPU/CUDA provider selection, batch inference, cancellation, cached results and classical/learned/hybrid ranking. It never downloads weights during ordinary use. See [docs/models.md](docs/models.md). No pretrained weights are bundled in this release, so classical mode is the default.
+
+## Review and personalisation
+
+FRAME labels its review-priority number as a heuristic, combining selection-boundary proximity, missing/disagreeing evidence and uniqueness. A user-set budget bounds the queue. Pairwise A/B/equal/skip feedback trains a deterministic regularised logistic ranking model after three informative examples. Profiles, history, undo/reset and model versions remain local in SQLite. Personal preference contributes at most 20% of ranking quality and cannot override pins, exclusions or target size.
+
+No preference improvement is claimed without held-out human labels. `benchmarks/evaluate_preferences.py` accepts feature-level labelled examples and reports held-out agreement.

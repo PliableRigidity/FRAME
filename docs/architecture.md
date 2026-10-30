@@ -24,3 +24,5 @@ Phase 3 adds cached content/perceptual features and normalized group membership 
 Selection exposes quality-only, group-representative and diversity-aware greedy baselines. The diversity method uses an interpretable MMR-style quality-minus-redundancy utility with deterministic tie-breaking. Pins and exclusions are persisted hard constraints. Exports use `copy2`, collision-safe stable-ID suffixes and only report completion after every copy succeeds.
 
 Learned semantic embeddings and calibrated profile weights remain Phase 4 work. Current scene grouping detects visual composition, not semantic identity.
+
+Phase 5 adds a bounded impact-aware review queue and local pairwise preference profiles. The Bradley–Terry-style logistic learner uses six existing, interpretable features with L2 regularisation and deterministic optimisation. It refuses to claim learning below three informative comparisons, keeps profiles isolated, and caps preference influence in selection.

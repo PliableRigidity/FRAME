@@ -10,11 +10,12 @@ from .config import Settings
 from .database import create_database, session_dependency
 from .ingestion import RAW_EXTENSIONS, RENDERED_EXTENSIONS, validate_source
 from .jobs import ScanCoordinator
-from .models import GroupMember, Photo, PhotoGroup
+from .models import GroupMember, PairwiseFeedback, Photo, PhotoGroup, PreferenceProfile
 from .quality import QualityConfig, recommend
 from .selection import ConstraintError, PROFILES, SelectionRequest, collection_metrics, select_collection
 from .exporting import safe_export
 from .ml import CONTEXTS, LearnedCoordinator, MLSettings, hybrid_score
+from .preferences import next_pair, retrain, review_queue
 
 
 class ScanRequest(BaseModel):
@@ -53,6 +54,17 @@ class MLSettingsRequest(BaseModel):
     device: str = "auto"
     classical_weight: float = .6
     learned_weight: float = .4
+
+
+class PreferenceProfileRequest(BaseModel):
+    name: str
+    enabled: bool = True
+
+
+class FeedbackRequest(BaseModel):
+    photo_a_id: int
+    photo_b_id: int
+    choice: str
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -97,6 +109,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/ml/cancel")
     def cancel_ml(): return learned.cancel()
+
+    @app.get("/api/review/queue")
+    def get_review_queue(budget: int | None = Query(25, ge=0, le=10000), session: Session = Depends(db)):
+        queue = review_queue(session, budget); session.commit()
+        return {"budget": budget, "items": [{"photo": _serialize(photo), "priority": priority, "label": "Heuristic review priority", "reason": reason} for photo, priority, reason in queue]}
+
+    @app.get("/api/preferences/profiles")
+    def preference_profiles(session: Session = Depends(db)):
+        return {"items": [{"id": p.id, "name": p.name, "enabled": p.enabled, "model_version": p.model_version, "model": json.loads(p.model_json) if p.model_json else None} for p in session.scalars(select(PreferenceProfile).order_by(PreferenceProfile.id))]}
+
+    @app.post("/api/preferences/profiles")
+    def create_preference_profile(request: PreferenceProfileRequest, session: Session = Depends(db)):
+        if not request.name.strip(): raise HTTPException(422, "Profile name is required")
+        profile = PreferenceProfile(name=request.name.strip(), enabled=request.enabled); session.add(profile)
+        try: session.commit()
+        except Exception as exc: session.rollback(); raise HTTPException(409, "Profile name already exists") from exc
+        return {"id": profile.id, "name": profile.name, "enabled": profile.enabled}
+
+    @app.delete("/api/preferences/profiles/{profile_id}/feedback/latest")
+    def undo_feedback(profile_id: int, session: Session = Depends(db)):
+        feedback = session.scalar(select(PairwiseFeedback).where(PairwiseFeedback.profile_id == profile_id).order_by(PairwiseFeedback.id.desc()))
+        if not feedback: raise HTTPException(404, "No feedback to undo")
+        session.delete(feedback); profile = session.get(PreferenceProfile, profile_id); session.flush()
+        return retrain(session, profile)
+
+    @app.delete("/api/preferences/profiles/{profile_id}/feedback")
+    def reset_feedback(profile_id: int, session: Session = Depends(db)):
+        for feedback in session.scalars(select(PairwiseFeedback).where(PairwiseFeedback.profile_id == profile_id)): session.delete(feedback)
+        profile = session.get(PreferenceProfile, profile_id)
+        if not profile: raise HTTPException(404, "Profile not found")
+        session.flush(); return retrain(session, profile)
+
+    @app.get("/api/preferences/profiles/{profile_id}/pair")
+    def comparison_pair(profile_id: int, session: Session = Depends(db)):
+        if not session.get(PreferenceProfile, profile_id): raise HTTPException(404, "Profile not found")
+        pair = next_pair(session, profile_id)
+        return {"pair": None if not pair else {"a": _serialize(pair[0]), "b": _serialize(pair[1])}}
+
+    @app.post("/api/preferences/profiles/{profile_id}/feedback")
+    def record_feedback(profile_id: int, request: FeedbackRequest, session: Session = Depends(db)):
+        if request.choice not in {"a", "b", "equal", "skip"}: raise HTTPException(422, "Unknown comparison choice")
+        if request.photo_a_id == request.photo_b_id: raise HTTPException(422, "Choose two different photographs")
+        profile = session.get(PreferenceProfile, profile_id)
+        if not profile or not session.get(Photo, request.photo_a_id) or not session.get(Photo, request.photo_b_id): raise HTTPException(404, "Profile or photo not found")
+        session.add(PairwiseFeedback(profile_id=profile_id, photo_a_id=request.photo_a_id, photo_b_id=request.photo_b_id, choice=request.choice)); session.flush()
+        return retrain(session, profile)
+
+    @app.get("/api/preferences/profiles/{profile_id}/export")
+    def export_preferences(profile_id: int, session: Session = Depends(db)):
+        profile = session.get(PreferenceProfile, profile_id)
+        if not profile: raise HTTPException(404, "Profile not found")
+        feedback = list(session.scalars(select(PairwiseFeedback).where(PairwiseFeedback.profile_id == profile_id)))
+        return {"format_version": 1, "profile": {"name": profile.name, "enabled": profile.enabled}, "feedback": [{"photo_a_id": f.photo_a_id, "photo_b_id": f.photo_b_id, "choice": f.choice} for f in feedback]}
 
     @app.put("/api/photos/{photo_id}/context/{profile}")
     def set_context(photo_id: int, profile: str, session: Session = Depends(db)):
@@ -214,7 +279,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def _serialize(photo: Photo) -> dict:
     analysis = json.loads(photo.analysis_json) if photo.analysis_json else None
-    return {"id": photo.id, "name": photo.display_name, "capture_time": photo.capture_time, "width": photo.width, "height": photo.height, "camera": photo.camera, "lens": photo.lens, "status": photo.status, "error": photo.error, "has_thumbnail": bool(photo.thumbnail_path), "technical_score": photo.technical_score, "learned": json.loads(photo.learned_json) if photo.learned_json else None, "hybrid_score": photo.hybrid_score, "context_profile": photo.context_profile, "recommendation": photo.recommendation, "analysis": analysis, "pinned": photo.pinned, "excluded": photo.excluded, "selected": photo.selected, "selection_rank": photo.selection_rank, "selection_explanation": photo.selection_explanation, "assets": [{"path": a.source_path, "kind": a.kind, "extension": a.extension, "size": a.size} for a in photo.assets]}
+    return {"id": photo.id, "name": photo.display_name, "capture_time": photo.capture_time, "width": photo.width, "height": photo.height, "camera": photo.camera, "lens": photo.lens, "status": photo.status, "error": photo.error, "has_thumbnail": bool(photo.thumbnail_path), "technical_score": photo.technical_score, "learned": json.loads(photo.learned_json) if photo.learned_json else None, "hybrid_score": photo.hybrid_score, "context_profile": photo.context_profile, "preference_score": photo.preference_score, "review_priority": photo.review_priority, "recommendation": photo.recommendation, "analysis": analysis, "pinned": photo.pinned, "excluded": photo.excluded, "selected": photo.selected, "selection_rank": photo.selection_rank, "selection_explanation": photo.selection_explanation, "assets": [{"path": a.source_path, "kind": a.kind, "extension": a.extension, "size": a.size} for a in photo.assets]}
 
 
 app = create_app()

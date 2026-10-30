@@ -26,6 +26,7 @@ def create_database(settings: Settings):
         "selected": "BOOLEAN NOT NULL DEFAULT 0", "selection_rank": "INTEGER",
         "selection_explanation": "TEXT",
         "learned_json": "TEXT", "hybrid_score": "FLOAT", "context_profile": "VARCHAR(32)",
+        "preference_score": "FLOAT", "review_priority": "FLOAT",
     }
     with engine.begin() as connection:
         for name, sql_type in additions.items():
